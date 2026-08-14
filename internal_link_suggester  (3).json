@@ -1,0 +1,817 @@
+{
+  "name": "internal link suggester",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        960,
+        640
+      ],
+      "id": "ef0ff9fc-c25e-41d6-b1ef-dc0ef1262a98"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "name": "1. Get All Existing Post IDs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1160,
+        820
+      ],
+      "id": "c3c40ba7-4482-4174-8327-2f2b3ad29a4a",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "name": "2. Get Processed Link IDs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1360,
+        540
+      ],
+      "id": "e98f2cf6-a0e7-42a7-a730-e40898000be0",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "name": "3. Get ALL Embedding Data (ONCE)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1600,
+        780
+      ],
+      "id": "feb57422-2a79-40de-bc85-1b5b2ceda816",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst allPostsItems = $items('1. Get All Existing Post IDs');\nconst processedItems = $items('2. Get Processed Link IDs');\nconst embeddingItems = $items('3. Get ALL Embedding Data (ONCE)');\n\n\nconst allPostIds = new Set(allPostsItems.map(item => String(item.json['Post ID'])));\nconst processedPostIds = new Set(processedItems.map(item => String(item.json['Post ID'])));\nconst allEmbeddings = embeddingItems.map(item => item.json);\n\n\nfor (const id of processedPostIds) {\n    allPostIds.delete(id);\n}\nconst unprocessedIds = Array.from(allPostIds).slice(0, 7);\n\nif (unprocessedIds.length === 0) {\n    return [];\n}\n\n\nconst output = unprocessedIds.map(id => {\n\n    const postData = allEmbeddings.find(p => String(p['Post ID']) === id);\n    return {\n        json: {\n            ...postData, \n            'allEmbeddingsData': allEmbeddings\n        }\n    };\n}).filter(item => item.json['Post URL']); \n\nreturn output;"
+      },
+      "name": "4. Prepare Data for Loop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        500
+      ],
+      "id": "e017a7ec-914b-4c18-afec-e21e86d9935e"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "name": "Loop Over New Posts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        2040,
+        640
+      ],
+      "id": "42d3d731-9346-415d-a373-3bb5e16399b7"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- 1. دریافت داده‌ها ---\nconst mergedData = $json;\nconst liveHtmlContent = mergedData.body;\nconst currentPostDataFromSheet = mergedData;\nconst allEmbeddingsData = mergedData.allEmbeddingsData;\n\n// --- 2. توابع کمکی ---\n\n// گرفتن ریشه دامنه\nconst getBaseUrl = (url) => {\n    try {\n        const urlObject = new URL(url);\n        return `${urlObject.protocol}//${urlObject.hostname.replace(/^www\\./, '')}`;\n    } catch (e) {\n        return 'https://oabeans.com';\n    }\n};\n\n// تابع نرمالایز قدرتمند\nconst normalizeUrl = (url) => {\n    if (typeof url !== 'string' || url.startsWith('#') || !url.trim()) return '';\n    try {\n        let urlObject = new URL(url);\n        // حذف www.\n        let hostname = urlObject.hostname.replace(/^www\\./, '');\n        // حذف اسلش آخر و پارامتر\n        let path = urlObject.pathname.replace(/\\/$/, \"\");\n        return `${urlObject.protocol}//${hostname}${path}`.toLowerCase();\n    } catch (e) {\n        return '';\n    }\n};\n\n// استخراج لینک‌ها از html (فقط url)\nconst extractLinks = (htmlContent, baseUrl) => {\n    if (typeof htmlContent !== 'string') return [];\n    const regex = /<a\\s+(?:[^>]*?\\s+)?href=([\\\"'])(.*?)\\1/gi;\n    const matches = new Set();\n    let match;\n    while ((match = regex.exec(htmlContent)) !== null) {\n        let href = match[2];\n        if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {\n            continue;\n        }\n        let fullUrl;\n        if (href.startsWith('http')) {\n            fullUrl = href;\n        } else if (href.startsWith('/')) {\n            fullUrl = baseUrl + href;\n        } else {\n            continue;\n        }\n        const normalized = normalizeUrl(fullUrl);\n        if (normalized) {\n            matches.add(normalized);\n        }\n    }\n    return Array.from(matches);\n};\n\n// استخراج anchor+url از html\nconst extractAnchorsWithUrls = (htmlContent, baseUrl) => {\n    if (typeof htmlContent !== 'string') return [];\n    const regex = /<a\\s+[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n    const result = [];\n    let match;\n    while ((match = regex.exec(htmlContent)) !== null) {\n        let href = match[1];\n        let text = match[2].replace(/<[^>]+>/g, '').trim(); // حذف تگ‌های داخل anchor\n        if (!href || !text) continue;\n        let fullUrl = href.startsWith('http') ? href : baseUrl + href;\n        let normalized = normalizeUrl(fullUrl);\n        if (normalized && text) {\n            result.push({ url: normalized, anchor: text });\n        }\n    }\n    return result;\n};\n\n// similarity\nconst calculateSimilarity = (vecA_str, vecB_str) => {\n    try {\n        const vecA = JSON.parse(vecA_str); \n        const vecB = JSON.parse(vecB_str);\n        if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length !== vecB.length) return 0;\n        let d = 0, mA = 0, mB = 0;\n        for (let i = 0; i < vecA.length; i++) { \n            d += (vecA[i] || 0) * (vecB[i] || 0); \n            mA += (vecA[i] || 0) ** 2; \n            mB += (vecB[i] || 0) ** 2; \n        }\n        mA = Math.sqrt(mA); \n        mB = Math.sqrt(mB);\n        if (mA === 0 || mB === 0) return 0;\n        return d / (mA * mB);\n    } catch (e) { return 0; }\n};\n\n\nconst baseUrl = getBaseUrl(currentPostDataFromSheet['Post URL']);\n\n\nconst existingLinks = extractLinks(liveHtmlContent, baseUrl)\n    .map(normalizeUrl)\n    .filter(Boolean);\nconst existingLinksSet = new Set(existingLinks);\n\n\nconst existingAnchors = extractAnchorsWithUrls(liveHtmlContent, baseUrl);\n\n\nconst linkableCandidates = allEmbeddingsData\n    .filter(p => p && p.Embedding && p['Post URL'])\n    .filter(p => String(p['Post ID']) !== String(currentPostDataFromSheet['Post ID']))\n    .filter(p => !existingLinksSet.has(normalizeUrl(p['Post URL'])));\n\nconst finalSuggestions = linkableCandidates\n    .map(p => ({ ...p, similarity: calculateSimilarity(currentPostDataFromSheet.Embedding, p.Embedding) }))\n    .filter(p => p.similarity > 0.45)\n    .sort((a, b) => b.similarity - a.similarity)\n    .slice(0, 5);\n\n\nconst usedAnchorsArr = existingAnchors.map(item => ({\n    anchor: item.anchor,\n    url: item.url\n}));\n\nconst linkablePostsString = finalSuggestions.map(p => `Title: ${p['Post Title']}\\nURL: ${p['Post URL']}`).join('\\n---\\n');\n\nreturn [{\n    json: {\n        currentPostData: currentPostDataFromSheet,\n        linkablePostsString: linkablePostsString,\n        existingLinks: existingLinks,\n        usedAnchorsArr: usedAnchorsArr \n    }\n}];\n"
+      },
+      "name": "5. Process & Find Similar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        1060
+      ],
+      "id": "f8621674-72a3-416f-b182-db90e2305e6a"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.linkablePostsString }}",
+              "operation": "notEqual"
+            }
+          ]
+        }
+      },
+      "name": "6. IF Links Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2740,
+        760
+      ],
+      "id": "ff100417-587a-4278-b309-9639fd5ac600"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- 1. دریافت داده‌ها ---\nconst inputData = $json;\nconst mainPostContent = inputData.currentPostData ? inputData.currentPostData['Plain Text Content'] : 'No content available.';\nconst linkablePosts = inputData.linkablePostsString || 'No candidates available.';\nconst currentPostTitle = inputData.currentPostData ? inputData.currentPostData['Post Title'] : '';\nconst usedAnchorsArr = inputData.usedAnchorsArr || [];\n\n// تبدیل usedAnchorsArr به فرمت قابل‌خواندن توسط AI\nconst usedAnchorsString = usedAnchorsArr.length === 0\n    ? '[]'\n    : usedAnchorsArr.map(x => `Anchor: \"${x.anchor}\"   |   URL: ${x.url}`).join('\\n');\n\n// --- 2. ساخت پرامپت جدید با قوانین سخت‌گیرانه برای سئو و anti-duplicate anchor+url ---\nconst prompt = `\nYou are a senior SEO strategist. Your priority is user experience and adding genuine value.\nYour task is to analyze the 'Main Post Content' and suggest up to 3 highly relevant internal links from the 'Link Candidates'.\n\n**CRITICAL RULES YOU MUST FOLLOW:**\n\n1.  **ADD VALUE, DON'T REPEAT:** The suggested link MUST offer new, supplementary information. It should answer a logical next question or expand on a related sub-topic.\n2.  **AVOID REDUNDANT LINKS:**\n    *   **NO GENERAL FROM SPECIFIC:** Do NOT link from a specific article (e.g., \"Ungating in LEGO\") to a more general one (e.g., \"Ungating in Toys\" or \"What is Ungating?\"). This is a bad user experience.\n    *   Do not suggest a link if its topic is already the main subject of the current article.\n\n3.  **STRICT ANCHOR TEXT RULES:**\n    *   The anchor text MUST be a specific, descriptive phrase (3-7 words) that accurately reflects the target page's content.\n    *   The anchor text MUST be selected DIRECTLY from the 'Main Post Content'. DO NOT invent or rephrase it.\n    *   **FORBIDDEN ANCHORS:** Absolutely NO generic phrases like \"gain more profits\", \"click here\", \"read more\", \"learn more\", \"this article\", etc.\n\n4.  **NO DUPLICATE ANCHOR LINKS:**  \n    *   If an anchor text in 'Main Post Content' is already hyperlinked to a certain URL (as shown in the list below), you are absolutely FORBIDDEN from suggesting the same anchor text to the same URL again—even if it appears elsewhere in the content without a link.  \n    *   Here is the list of currently linked anchor texts and their URLs. DO NOT suggest these pairs again:\\n${usedAnchorsString}\n\n5.  **OUTPUT FORMATTING:**\n    *   Return ONLY a valid JSON object with a single key \"suggestions\", which is an array of objects.\n    *   Each object MUST have these 4 keys: \"anchorText\", \"link\", \"reason\", and \"contextualSentence\".\n    *   \"contextualSentence\" MUST be the full sentence from the 'Main Post Content' where your chosen \"anchorText\" is located.\n    *   \"reason\" must briefly explain WHY the link adds value to the reader, following the rules above.\n\n---\n**Current Article Title:**\n${currentPostTitle}\n\n---\n**Main Post Content (Source):**\n${mainPostContent}\n\n---\n**Link Candidates (Destinations):**\n${linkablePosts}\n---\n`;\n\nreturn [{\n    json: {\n        model: 'gpt-4o',\n        messages: [\n            { role: 'system', content: 'You are a world-class SEO strategist that outputs only valid JSON, strictly following all user-defined rules without exception.' },\n            { role: 'user', content: prompt }\n        ],\n        response_format: { type: 'json_object' }\n    }\n}];\n"
+      },
+      "name": "7. Construct AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        1020
+      ],
+      "id": "3c6c25c7-b054-4599-96c4-61a9d957e5b0"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $json.model }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ $json.messages }}"
+            },
+            {
+              "name": "response_format",
+              "value": "={{ $json.response_format }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "8. Call OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3020,
+        460
+      ],
+      "id": "a212ae63-5134-4405-b112-9711fa81f344"
+    },
+    {
+      "parameters": {
+        "jsCode": "let suggestions_to_log = [];\nconst sourcePost = $items('5. Process & Find Similar')[0].json.currentPostData;\n\ntry {\n    const cleanContent = $json.choices[0].message.content.trim();\n    const response = JSON.parse(cleanContent);\n    \n    if (response && Array.isArray(response.suggestions)) {\n        suggestions_to_log = response.suggestions\n            \n            .filter(s => s && s.anchorText && s.link && s.contextualSentence)\n            .map(s => ({\n                json: {\n                    anchorText: s.anchorText,\n                    link: s.link,\n                    reason: s.reason || 'No reason provided',\n                    \n                    contextualSentence: s.contextualSentence,\n                    sourcePostId: sourcePost['Post ID'],\n                    sourcePostTitle: sourcePost['Post Title'],\n                    sourceURL: sourcePost['Post URL']\n                }\n            }));\n    }\n} catch (e) {\n    console.error(\"Error processing AI response:\", e.message);\n    return []; \n}\n\nif (suggestions_to_log.length === 0) {\n    return [];\n}\nreturn suggestions_to_log;"
+      },
+      "name": "9. Process AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        1060
+      ],
+      "id": "3296a82e-32a3-43b6-8b72-9c8cc8ba0748"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "=",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Source URL": "={{ $json.sourceURL }}",
+            "Anchor Text": "={{ $json.anchorText }}",
+            "Link": "={{ $json.link }}",
+            "Reason": "={{ $json.reason }}",
+            "Post ID": "={{ $json.sourcePostId }}",
+            "Contextual Sentence": "={{ $json.contextualSentence }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Post ID",
+              "displayName": "Post ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source URL",
+              "displayName": "Source URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Anchor Text",
+              "displayName": "Anchor Text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Link",
+              "displayName": "Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reason",
+              "displayName": "Reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Contextual Sentence",
+              "displayName": "Contextual Sentence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "10. Log Suggestions to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        3320,
+        720
+      ],
+      "id": "92898ff4-9d01-4b21-b1f0-d40513feb24c",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json['Post URL'] }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2180,
+        960
+      ],
+      "id": "c949b15e-9d1b-4d5e-8f46-07d4cbc66c41",
+      "name": "Get Live Post Content"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        2460,
+        660
+      ],
+      "id": "3a250777-8f74-45e1-8efb-d36d24cad0fd",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "url": "https://URL_HERE/wp-json/wp/v2/posts?per_page=100&orderby=date&order=desc&_fields=id,title,slug,content,link,date,categories",
+        "options": {}
+      },
+      "name": "Part 1: Data Population - Fetch All Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -40,
+        660
+      ],
+      "id": "97a2432d-b013-4009-aa95-a65ce2447a81"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MIN_WORDS = 120; const MAX_EMBEDDING_INPUT = 1024; const cleanHTML = html => (html || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim(); const posts = $input.all().map(i => i.json).filter(p => p.content && p.content.rendered); if (!posts.length) { return []; } return posts.map(post => { const plainText = cleanHTML(post.content.rendered); return { json: { id: post.id, title: post.title, link: post.link, date: post.date, plainTextContent: plainText.slice(0, MAX_EMBEDDING_INPUT) } }; }).filter(p => p.json.plainTextContent.split(' ').length >= MIN_WORDS);"
+      },
+      "name": "Clean & Prepare Post Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        660
+      ],
+      "id": "22e46073-9ee1-4ade-96c9-0762071904d9"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "=",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Post ID": "={{ $json.id }}",
+            "Post Title": "={{ $json.title }}",
+            "Post URL": "={{ $json.link }}",
+            "Plain Text Content": "={{ $json.plainTextContent }}",
+            "Publish Date": "={{ $json.date }}"
+          },
+          "matchingColumns": [
+            "Post ID"
+          ],
+          "schema": [
+            {
+              "id": "Post ID",
+              "displayName": "Post ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Post Title",
+              "displayName": "Post Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Post URL",
+              "displayName": "Post URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Plain Text Content",
+              "displayName": "Plain Text Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Publish Date",
+              "displayName": "Publish Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "Store Posts in Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        360,
+        660
+      ],
+      "id": "79a5be56-7d4d-4407-a246-9d58d880a867",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "input",
+              "value": "={{ $json[\"Plain Text Content\"] }}"
+            },
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        560,
+        660
+      ],
+      "id": "6d7dc0ae-d191-4c22-aa2a-c7130aca3ac5"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "=",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Post ID": "={{ $('Clean & Prepare Post Data').item.json.id }}",
+            "Post Title": "={{ $('Clean & Prepare Post Data').item.json.title.rendered }}",
+            "Post URL": "={{ $('Clean & Prepare Post Data').item.json.link }}",
+            "Plain Text Content": "={{ $('Clean & Prepare Post Data').item.json.plainTextContent }}",
+            "Embedding": "={{ JSON.stringify($json.data[0].embedding) }}"
+          },
+          "matchingColumns": [
+            "Post ID"
+          ],
+          "schema": [
+            {
+              "id": "Post ID",
+              "displayName": "Post ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Post Title",
+              "displayName": "Post Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Post URL",
+              "displayName": "Post URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Plain Text Content",
+              "displayName": "Plain Text Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Embedding",
+              "displayName": "Embedding",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "Store Embeddings",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        760,
+        660
+      ],
+      "id": "6dfe26de-5a33-4ecc-ae85-1dff23278ebc",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BGSjdbc0Q73Eiwjy",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "1. Get All Existing Post IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Get All Existing Post IDs": {
+      "main": [
+        [
+          {
+            "node": "2. Get Processed Link IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Get Processed Link IDs": {
+      "main": [
+        [
+          {
+            "node": "3. Get ALL Embedding Data (ONCE)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Get ALL Embedding Data (ONCE)": {
+      "main": [
+        [
+          {
+            "node": "4. Prepare Data for Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Prepare Data for Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Over New Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. IF Links Found": {
+      "main": [
+        [
+          {
+            "node": "7. Construct AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Construct AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "8. Call OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Call OpenAI": {
+      "main": [
+        [
+          {
+            "node": "9. Process AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Process AI Response": {
+      "main": [
+        [
+          {
+            "node": "10. Log Suggestions to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over New Posts": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Live Post Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Process & Find Similar": {
+      "main": [
+        [
+          {
+            "node": "6. IF Links Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Live Post Content": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "5. Process & Find Similar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Part 1: Data Population - Fetch All Posts": {
+      "main": [
+        [
+          {
+            "node": "Clean & Prepare Post Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Prepare Post Data": {
+      "main": [
+        [
+          {
+            "node": "Store Posts in Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Posts in Sheet": {
+      "main": [
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Store Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "c9c6a2e9-5b60-4ebc-97a4-922a6f10b856",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9913ea893933b59d38f7989a895431911f0b0e3eba1ecd08e5257316d4010907"
+  },
+  "id": "UyBA60nVVJ5iCCIv",
+  "tags": []
+}
